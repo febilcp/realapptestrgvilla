@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Villa Compound Status Tracker</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+    }
+  </style>
+</head>
+<body class="bg-gray-100 p-4 md:p-8">
+  <div id="app">
+    <div class="flex flex-col items-center justify-center min-h-screen">
+      <svg class="h-16 w-16 text-gray-500 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+      </svg>
+      <p class="mt-4 text-gray-600 font-inter">Loading...</p>
+    </div>
+  </div>
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+    import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+    import { getFirestore, collection, doc, onSnapshot, setDoc, getDocs } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+
+    // Initialize Firebase with the provided configuration
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+    // Get the main container element for the application
+    const appContainer = document.getElementById('app');
+
+    let currentUserId = null;
+    let currentVillas = [];
+    let currentFilter = 'all';
+    let currentPage = 'home';
+
+    // Utility to generate a random user ID for anonymous login
+    const generateAnonymousUserId = () => {
+      const storedId = localStorage.getItem('anonymousUserId');
+      if (storedId) {
+        return storedId;
+      }
+      const newId = `anon-${crypto.randomUUID()}`;
+      localStorage.setItem('anonymousUserId', newId);
+      return newId;
+    };
+
+    // Villa status data and SVG icons
+    const statusInfo = {
+      'not_renovated': { label: 'Not Renovated', icon: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-white"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M12 16h0M12 12V8M12 16h0"/></svg>`, color: 'bg-gray-400' },
+      'under_renovation': { label: 'Under Renovation', icon: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-white"><path d="M14.7 6.3L17.7 3.3a1 1 0 0 1 1.4 1.4L16.1 7.7"/><path d="M16 11V3.5a2.5 2.5 0 0 0-5 0v5.7c0 .8.2 1.6.7 2.3L7.5 17.5"/><path d="m10 10 6.5-6.5"/><path d="M16 16v.01"/><path d="M18 13v.01"/><path d="M20 11v.01"/><path d="M12 21v-4"/><path d="M5 21v-8"/><path d="M19 21v-4"/><path d="M17.5 17.5 15 20"/><path d="M13 14 8 9"/></svg>`, color: 'bg-orange-400' },
+      'renovated_rented': { label: 'Renovated & Rented', icon: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-white"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`, color: 'bg-green-500' },
+      'renovated_not_rented': { label: 'Renovated & Not Rented', icon: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-white"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`, color: 'bg-sky-500' },
+      'rented_as_is': { label: 'Rented (as-is)', icon: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-white"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`, color: 'bg-purple-500' },
+    };
+
+    // --- Page Rendering Functions ---
+    const renderHomePage = (villas, counts, userId) => {
+      appContainer.innerHTML = `
+        <div class="min-h-screen bg-gray-100 p-4 md:p-8 font-inter">
+          ${renderHeader(userId, currentPage)}
+          <h2 class="text-2xl font-bold text-gray-800 mb-4">Total Villa Summary</h2>
+          <!-- Home page summary grid, now with click listeners -->
+          <div id="home-summary-container" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+            <!-- Total Villas card -->
+            <div class="bg-white p-4 rounded-xl shadow-md flex items-center justify-between cursor-pointer transition-transform transform hover:scale-105" data-status-click="all">
+              <div>
+                <div class="text-sm text-gray-500">Total Villas</div>
+                <div class="text-2xl font-bold text-gray-900">${villas.length}</div>
+              </div>
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-8 h-8 text-blue-500"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+            </div>
+            <!-- Dynamic status cards -->
+            ${Object.keys(statusInfo).map(statusKey => `
+              <div class="bg-white p-4 rounded-xl shadow-md flex items-center justify-between cursor-pointer transition-transform transform hover:scale-105" data-status-click="${statusKey}">
+                <div>
+                  <div class="text-sm text-gray-500">${statusInfo[statusKey].label}</div>
+                  <div class="text-2xl font-bold text-gray-900">${counts[statusKey] || 0}</div>
+                </div>
+                <div class="w-8 h-8 flex items-center justify-center rounded-full ${statusInfo[statusKey].color}">
+                  ${statusInfo[statusKey].icon}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+      // Attach a single click listener to the parent container for better performance
+      document.getElementById('home-summary-container').addEventListener('click', (e) => {
+        const card = e.target.closest('[data-status-click]');
+        if (card) {
+          const newFilter = card.getAttribute('data-status-click');
+          currentPage = 'villas';
+          currentFilter = newFilter;
+          renderMainUI();
+        }
+      });
+    };
+
+    const renderVillasPage = (villas, counts, filter, userId) => {
+      const filteredVillas = filter === 'all'
+        ? villas
+        : villas.filter(villa => villa.status === filter);
+
+      appContainer.innerHTML = `
+        <div class="min-h-screen bg-gray-100 p-4 md:p-8 font-inter">
+          ${renderHeader(userId, currentPage)}
+          <!-- Filter and Initialize buttons -->
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
+            <div id="filter-container" class="flex space-x-2 overflow-x-auto pb-2">
+              ${['all', 'not_renovated', 'under_renovation', 'renovated_not_rented', 'renovated_rented', 'rented_as_is'].map(s => `
+                <button
+                  data-filter="${s}"
+                  class="px-4 py-2 rounded-full font-medium transition-colors ${filter === s ? 'bg-blue-600 text-white shadow-lg' : 'bg-gray-300 text-gray-800 hover:bg-gray-400'}"
+                >
+                  ${s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ')}
+                </button>
+              `).join('')}
+            </div>
+            <button
+              id="reinitialize-button"
+              class="flex items-center px-4 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 mr-2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+              Re-initialize All Villas
+            </button>
+          </div>
+
+          <!-- Villa Grid -->
+          <div id="villa-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+            ${filteredVillas.map(villa => {
+              const { icon, color, label } = statusInfo[villa.status];
+              return `
+                <div
+                  class="bg-white rounded-xl shadow-md p-4 flex flex-col items-center justify-center text-center transition-transform transform hover:scale-105"
+                >
+                  <div class="text-lg font-bold text-gray-800">Villa ${villa.villaId}</div>
+                  <div class="mt-2 flex items-center justify-center w-12 h-12 rounded-full ${color}">
+                    ${icon}
+                  </div>
+                  <div class="mt-2 text-sm text-gray-600 font-medium">
+                    ${label}
+                  </div>
+                  <div class="mt-4 flex flex-col space-y-2 w-full">
+                    ${Object.keys(statusInfo).filter(s => s !== villa.status).map(s => `
+                      <button
+                        data-villa-id="${villa.villaId}"
+                        data-new-status="${s}"
+                        class="change-status-btn text-xs font-semibold py-2 px-3 rounded-md text-white transition-colors ${statusInfo[s].color} hover:opacity-80"
+                      >
+                        Change to ${statusInfo[s].label}
+                      </button>
+                    `).join('')}
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+
+      // Attach event listeners after rendering
+      document.querySelectorAll('.change-status-btn').forEach(button => {
+        button.addEventListener('click', (e) => {
+          const villaId = e.target.getAttribute('data-villa-id');
+          const newStatus = e.target.getAttribute('data-new-status');
+          updateVillaStatus(villaId, newStatus);
+        });
+      });
+
+      document.getElementById('reinitialize-button').addEventListener('click', initializeVillas);
+
+      document.getElementById('filter-container').addEventListener('click', (e) => {
+        if (e.target.tagName === 'BUTTON') {
+          currentFilter = e.target.getAttribute('data-filter');
+          renderMainUI();
+        }
+      });
+    };
+
+    // Main render function based on current page state
+    const renderMainUI = () => {
+      const statusCounts = currentVillas.reduce((acc, villa) => {
+        acc[villa.status] = (acc[villa.status] || 0) + 1;
+        return acc;
+      }, {});
+
+      if (currentVillas.length === 0) {
+        appContainer.innerHTML = `
+          <div class="flex flex-col items-center justify-center min-h-screen">
+            <p class="mt-4 text-gray-600 font-inter">No villas found. Initialize the database.</p>
+            <button
+              id="initialize-button"
+              class="mt-6 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+            >
+              Initialize Villas Now
+            </button>
+          </div>
+        `;
+        document.getElementById('initialize-button').addEventListener('click', initializeVillas);
+      } else if (currentPage === 'home') {
+        renderHomePage(currentVillas, statusCounts, currentUserId);
+        attachNavListeners();
+      } else if (currentPage === 'villas') {
+        renderVillasPage(currentVillas, statusCounts, currentFilter, currentUserId);
+        attachNavListeners();
+      }
+    };
+    
+    // --- Shared Functions ---
+    const renderHeader = (userId, activePage) => {
+      return `
+        <header class="flex flex-col md:flex-row justify-between items-center mb-6">
+          <h1 class="text-3xl md:text-4xl font-bold text-gray-800 mb-2 md:mb-0">
+            Villa Compound Status
+          </h1>
+          <div class="flex flex-col md:flex-row items-center space-y-4 md:space-y-0 md:space-x-4">
+             <div class="text-gray-600 flex items-center space-x-2">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              <span class="text-sm font-medium break-all">User ID: ${userId}</span>
+            </div>
+             <div class="flex space-x-2">
+                <button data-page="home" class="nav-btn transition-colors px-6 py-3 rounded-lg font-bold shadow-md ${activePage === 'home' ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-800 hover:bg-gray-400'}">Home</button>
+                <button data-page="villas" class="nav-btn transition-colors px-6 py-3 rounded-lg font-bold shadow-md ${activePage === 'villas' ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-800 hover:bg-gray-400'}">Villas</button>
+             </div>
+          </div>
+        </header>
+      `;
+    };
+
+    const attachNavListeners = () => {
+      document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const newPage = e.target.getAttribute('data-page');
+          if (newPage !== currentPage) {
+            currentPage = newPage;
+            // When navigating back to 'home', reset the filter
+            if (newPage === 'home') {
+              currentFilter = 'all';
+            }
+            renderMainUI();
+          }
+        });
+      });
+    };
+
+    // Update a villa's status in Firestore
+    const updateVillaStatus = async (villaId, newStatus) => {
+      try {
+        const villaRef = doc(db, `artifacts/${appId}/users/${currentUserId}/villas`, String(villaId));
+        await setDoc(villaRef, { status: newStatus, lastUpdated: Date.now() }, { merge: true });
+      } catch (e) {
+        console.error("Update Status Error:", e);
+        showError("Failed to update villa status.");
+      }
+    };
+
+    // Function to initialize the 200 villas if they don't exist
+    const initializeVillas = async () => {
+      showLoading();
+      showError(null);
+      try {
+        const villasCollectionRef = collection(db, `artifacts/${appId}/users/${currentUserId}/villas`);
+        const snapshot = await getDocs(villasCollectionRef);
+        if (snapshot.empty) {
+          const villaData = Array.from({ length: 200 }, (_, i) => ({
+            villaId: i + 1,
+            status: 'not_renovated',
+            lastUpdated: Date.now(),
+          }));
+          
+          const batchSize = 100;
+          for (let i = 0; i < villaData.length; i += batchSize) {
+            const batch = villaData.slice(i, i + batchSize);
+            await Promise.all(batch.map(villa => setDoc(doc(villasCollectionRef, String(villa.villaId)), villa)));
+          }
+        }
+      } catch (e) {
+        console.error("Initialization Error:", e);
+        showError("Failed to initialize villas.");
+      }
+    };
+
+    const showLoading = () => {
+      const loadingScreen = `
+        <div class="flex flex-col items-center justify-center min-h-screen">
+          <svg class="h-16 w-16 text-gray-500 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <p class="mt-4 text-gray-600 font-inter">Loading...</p>
+        </div>
+      `;
+      appContainer.innerHTML = loadingScreen;
+    };
+
+    const showError = (message) => {
+      const errorScreen = `
+        <div class="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4">
+          <div class="bg-white rounded-lg p-6 max-w-sm w-full text-center shadow-lg">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-12 h-12 text-red-500 mx-auto mb-4"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
+            <h3 class="text-xl font-bold text-gray-800 mb-2">Error</h3>
+            <p class="text-gray-600">${message}</p>
+            <button
+              id="close-error-btn"
+              class="mt-4 px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      `;
+      document.body.insertAdjacentHTML('beforeend', errorScreen);
+      document.getElementById('close-error-btn').addEventListener('click', () => {
+        document.querySelector('.fixed').remove();
+      });
+    };
+
+    // Main logic on auth state change
+    onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        // If there's no user, try to sign in
+        try {
+          if (typeof __initial_auth_token !== 'undefined') {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } else {
+            await signInAnonymously(auth);
+          }
+          return; // Return and wait for onAuthStateChanged to fire again with the new user
+        } catch (e) {
+          console.error("Firebase Auth Error:", e);
+          showError("Failed to authenticate with Firebase.");
+          return;
+        }
+      }
+
+      // We can now proceed with Firestore operations as a user is authenticated
+      currentUserId = user.uid;
+      const villasCollectionRef = collection(db, `artifacts/${appId}/users/${currentUserId}/villas`);
+      
+      onSnapshot(villasCollectionRef, (snapshot) => {
+        const villaList = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        villaList.sort((a, b) => a.villaId - b.villaId);
+        currentVillas = villaList; // Store the data
+        renderMainUI();
+      }, (e) => {
+        console.error("Firestore Snapshot Error:", e);
+        showError("Failed to fetch data from Firestore. Check permissions.");
+      });
+    });
+  </script>
+</body>
+</html>
