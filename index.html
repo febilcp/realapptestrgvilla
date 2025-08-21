@@ -26,11 +26,39 @@
     import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
     import { getFirestore, collection, doc, onSnapshot, setDoc, getDocs } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
+    // IMPORTANT: Firebase Configuration
+    // This configuration connects your app to your specific Firebase project.
+    const YOUR_FIREBASE_CONFIG = {
+      apiKey: "AIzaSyC-HMoN2PEvcotqF810GdjCAiJMCsrxygex",
+      authDomain: "rgvillatestapp.firebaseapp.com",
+      projectId: "rgvillatestapp",
+      storageBucket: "rgvillatestapp.appspot.com",
+      messagingSenderId: "227088882158",
+      appId: "1:227088882158:web:b590b710dc9e1ef3e16f1f",
+      measurementId: "G-1EY2WXZRXZ"
+    };
+
     // Initialize Firebase with the provided configuration
-    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
-    const auth = getAuth(app);
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : (Object.keys(YOUR_FIREBASE_CONFIG).length > 0 ? YOUR_FIREBASE_CONFIG : null);
+    
+    let app = null;
+    let db = null;
+    let auth = null;
+
+    if (firebaseConfig) {
+      app = initializeApp(firebaseConfig);
+      db = getFirestore(app);
+      auth = getAuth(app);
+    } else {
+       // If no configuration is found, display an error message
+       document.getElementById('app').innerHTML = `
+         <div class="flex flex-col items-center justify-center min-h-screen p-4 text-center">
+           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-16 h-16 text-red-500 mb-4"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
+           <h2 class="text-2xl font-bold text-red-700">Configuration Error</h2>
+           <p class="mt-2 text-gray-600">Please provide your Firebase project configuration in the code to get started.</p>
+         </div>
+       `;
+    }
 
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
@@ -188,6 +216,11 @@
 
     // Main render function based on current page state
     const renderMainUI = () => {
+      if (!app) {
+        // App is not initialized due to missing config, do nothing.
+        return;
+      }
+
       const statusCounts = currentVillas.reduce((acc, villa) => {
         acc[villa.status] = (acc[villa.status] || 0) + 1;
         return acc;
@@ -210,7 +243,7 @@
         renderHomePage(currentVillas, statusCounts, currentUserId);
         attachNavListeners();
       } else if (currentPage === 'villas') {
-        renderVillasPage(currentVillas, statusCounts, currentFilter, currentUserId);
+        renderVillasPage(currentVillas, statusCounts, currentUserId, currentFilter);
         attachNavListeners();
       }
     };
@@ -325,40 +358,42 @@
     };
 
     // Main logic on auth state change
-    onAuthStateChanged(auth, async (user) => {
-      if (!user) {
-        // If there's no user, try to sign in
-        try {
-          if (typeof __initial_auth_token !== 'undefined') {
-            await signInWithCustomToken(auth, __initial_auth_token);
-          } else {
-            await signInAnonymously(auth);
+    if (auth) {
+      onAuthStateChanged(auth, async (user) => {
+        if (!user) {
+          // If there's no user, try to sign in
+          try {
+            if (typeof __initial_auth_token !== 'undefined') {
+              await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+              await signInAnonymously(auth);
+            }
+            return; // Return and wait for onAuthStateChanged to fire again with the new user
+          } catch (e) {
+            console.error("Firebase Auth Error:", e);
+            showError("Failed to authenticate with Firebase.");
+            return;
           }
-          return; // Return and wait for onAuthStateChanged to fire again with the new user
-        } catch (e) {
-          console.error("Firebase Auth Error:", e);
-          showError("Failed to authenticate with Firebase.");
-          return;
         }
-      }
 
-      // We can now proceed with Firestore operations as a user is authenticated
-      currentUserId = user.uid;
-      const villasCollectionRef = collection(db, `artifacts/${appId}/users/${currentUserId}/villas`);
-      
-      onSnapshot(villasCollectionRef, (snapshot) => {
-        const villaList = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        villaList.sort((a, b) => a.villaId - b.villaId);
-        currentVillas = villaList; // Store the data
-        renderMainUI();
-      }, (e) => {
-        console.error("Firestore Snapshot Error:", e);
-        showError("Failed to fetch data from Firestore. Check permissions.");
+        // We can now proceed with Firestore operations as a user is authenticated
+        currentUserId = user.uid;
+        const villasCollectionRef = collection(db, `artifacts/${appId}/users/${currentUserId}/villas`);
+        
+        onSnapshot(villasCollectionRef, (snapshot) => {
+          const villaList = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          }));
+          villaList.sort((a, b) => a.villaId - b.villaId);
+          currentVillas = villaList; // Store the data
+          renderMainUI();
+        }, (e) => {
+          console.error("Firestore Snapshot Error:", e);
+          showError("Failed to fetch data from Firestore. Check permissions.");
+        });
       });
-    });
+    }
   </script>
 </body>
 </html>
